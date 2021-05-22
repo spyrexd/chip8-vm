@@ -435,5 +435,78 @@ mod tests {
         assert_eq!(cpu.get_reg(Register::V0), 0x00);
     }
 
+    #[test]
+    fn instruction_ld_reg() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0x8010);
+        cpu.set_reg(Register::V0, 0x00);
+        cpu.set_reg(Register::V1, 0xFF);
+        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(cpu.get_reg(Register::V0), cpu.get_reg(Register::V1));
+    }
+
+    #[test]
+    fn instruction_or_reg() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0x8011);
+        cpu.set_reg(Register::V0, 0x0F);
+        cpu.set_reg(Register::V1, 0xF0);
+        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(cpu.get_reg(Register::V0), 0xFF);
+    }
+
+    #[test]
+    fn instruction_xor_reg() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0x8013);
+        cpu.set_reg(Register::V0, 0xEF);
+        cpu.set_reg(Register::V1, 0xFE);
+        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(cpu.get_reg(Register::V0), 0x11);
+    }
+
+
+    //0x9000
+    #[test]
+    fn instruction_skip_reg_not_equal() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0x9010);
+        let start_pc = cpu.pc;
+        cpu.set_reg(Register::V0, 0x42);
+        cpu.set_reg(Register::V1, 0x84);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(cpu.pc, start_pc + 2);
+    }
+    #[test]
+    fn instruction_skip_reg_not_equal_fail() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0x9011);
+        cpu.set_reg(Register::V0, 0x42);
+        cpu.set_reg(Register::V1, 0x84);
+        let res = cpu.execute(&mut mem, &mut display, ins);
+        assert!(res.is_err());
+    }
+
+    //0x0A000
+     #[test]
+    fn instruction_ld_idx() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0xAFFF);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(cpu.idx, 0x0FFF);
+    }   
+
 
 }
