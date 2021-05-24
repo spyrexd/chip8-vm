@@ -1,26 +1,100 @@
+use bitvec::prelude::*;
 use derive_try_from_primitive::TryFromPrimitive;
 use pretty_hex::pretty_hex;
-use std::ops;
 use std::{convert::TryFrom, fmt};
+use std::{ops, usize};
 
 const MEM_SIZE: usize = 4096;
 
 //128 x 64
-const DISPLAY_SIZE: (usize, usize) = (128, 64);
+//const DISPLAY_SIZE: (usize, usize) = (128, 64);
+const DISPLAY_SIZE: (usize, usize) = (64, 32);
 
-struct Display();
+const FONT_DATA: [u8; 80] = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+];
+
+pub struct Display {
+    x: usize,
+    y: usize,
+    data: Vec<u8>,
+}
+
+impl fmt::Display for Display {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, v) in self.data.iter().enumerate() {
+            if i % self.x == 0  && i > 0{
+                write!(f, "\n" )?;
+            }
+            if *v == 0x0 {
+                write!(f, " ")?;
+            } else {
+                write!(f, "\u{2588}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Display {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_fmt(format_args!("{}", pretty_hex(&self.data)))
+    }
+}
 
 impl Display {
     fn new() -> Self {
-        Display()
+        Display {
+            x: DISPLAY_SIZE.0,
+            y: DISPLAY_SIZE.1,
+            data: vec![0x0; DISPLAY_SIZE.0 * DISPLAY_SIZE.1],
+        }
     }
 
-    fn cls(&self) {
-        unimplemented!("CLS")
+    fn cls(&mut self) {
+        for addr in self.data.as_mut_slice() {
+            *addr = 0x0;
+        }
     }
 
-    fn draw(&self) {
-        unimplemented!("DRAW")
+    fn draw(&mut self, x: &u8, y: &u8, values: &[u8]) -> bool {
+        let mut collision = false;
+        'row: for (i, v) in values.iter().enumerate() {
+            let row = (*y as usize + i) * self.x;
+            if row >= self.x * self.y {
+                break 'row;
+            }
+            let bits = BitSlice::<Msb0, _>::from_element(v);
+            for (j, b) in bits.iter().enumerate() {
+                let col = *x as usize + j;
+                if col >= self.x {
+                    continue 'row;
+                }
+                let location = row + col;
+                let current = self.data[location];
+                let xor = current ^ *b as u8;
+                if current == 0x1 && xor == 0x0 {
+                    collision = true;
+                }
+                self.data[location] = xor;
+            }
+        }
+        collision
     }
 }
 
@@ -31,6 +105,7 @@ pub enum CpuError {
     InvalidOpCode(<OpCode as TryFrom<u16>>::Error),
     InvalidInstruction(u16),
     EmptyStack,
+    MemoryWriteError,
 }
 
 impl From<<Register as TryFrom<u8>>::Error> for CpuError {
@@ -88,7 +163,13 @@ pub enum OpCode {
     OC_F = 0xF000,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+pub enum Mode {
+    Debug,
+    Normal,
+
+}
+#[derive(Debug)]
 pub struct CPU {
     pc: u16,
     idx: u16,
@@ -96,13 +177,21 @@ pub struct CPU {
     delay: u8,
     sound: u8,
     stack: Vec<u16>,
+    mode: Mode,
+    instruction: Instruction,
 }
 
 impl CPU {
     fn new() -> Self {
         CPU {
             pc: 0x0200,
-            ..Default::default()
+            idx: 0x000,
+            registers: [0x0; 16],
+            delay: 0x0,
+            sound: 0x0,
+            stack: vec![],
+            mode: Mode::Debug,
+            instruction: Instruction(0x000),
         }
     }
 
@@ -120,6 +209,7 @@ impl CPU {
         }
         let ins = Instruction(((memory[self.pc] as u16) << 8) | memory[self.pc + 1] as u16);
         self.pc += 2;
+        self.instruction = ins;
         Ok(ins)
     }
 
@@ -129,6 +219,10 @@ impl CPU {
         display: &mut Display,
         instruction: Instruction,
     ) -> Result<(), CpuError> {
+        match self.mode {
+            Mode::Debug => println!("{:X?}", self),
+            _ => {},
+        }
         let opcode = instruction.opcode()?;
         match opcode {
             OpCode::OC_0 => match instruction.low_byte() {
@@ -161,9 +255,9 @@ impl CPU {
                     if self.get_reg(registers.0) == self.get_reg(registers.1) {
                         self.pc += 2;
                     }
-                },
+                }
                 _ => return Err(CpuError::InvalidInstruction(instruction.0)),
-            }
+            },
             OpCode::OC_6 => {
                 let registers = instruction.registers()?;
                 let value = instruction.low_byte();
@@ -182,7 +276,7 @@ impl CPU {
                 unimplemented!("OpCode not handled")
             }
             OpCode::OC_A => {
-                unimplemented!("OpCode not handled")
+                self.idx = instruction.address();
             }
             OpCode::OC_B => {
                 unimplemented!("OpCode not handled")
@@ -191,7 +285,14 @@ impl CPU {
                 unimplemented!("OpCode not handled")
             }
             OpCode::OC_D => {
-                unimplemented!("OpCode not handled")
+                let registers = instruction.registers()?;
+                let value = instruction.last_nibble() as usize;
+                let x = self.get_reg(registers.0) % display.x as u8;
+                let y = self.get_reg(registers.1) % display.y as u8;
+                self.set_reg(Register::VF, 0x0);
+
+                let collision = display.draw(&x, &y, &memory.data[self.idx as usize..self.idx as usize+value]);
+                self.set_reg(Register::VF, collision as u8);
             }
             OpCode::OC_E => {
                 unimplemented!("OpCode not handled")
@@ -202,10 +303,21 @@ impl CPU {
         }
         Ok(())
     }
+
+    fn load_font(&self, memory: &mut Memory, font_data: &[u8]) -> Result<(), CpuError> {
+        memory.load(&font_data, 0x50)
+    }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy)]
 struct Instruction(u16);
+
+impl fmt::Debug for Instruction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Instruction(0x{:04X})", self.0)
+        
+    }
+}
 
 impl Instruction {
     fn opcode(&self) -> Result<OpCode, CpuError> {
@@ -249,6 +361,17 @@ impl Memory {
         for addr in self.data.as_mut_slice() {
             *addr = 0u8;
         }
+    }
+
+    fn load(&mut self, data: &[u8], start: usize) -> Result<(), CpuError> {
+        if start + data.len() > MEM_SIZE {
+            return Err(CpuError::MemoryWriteError);
+        }
+        // Find better way
+        for (i, v) in data.iter().enumerate() {
+            self[(start + i) as u16] = *v;
+        }
+        Ok(())
     }
 }
 
@@ -306,6 +429,14 @@ mod tests {
         cpu.set_reg(Register::V0, 0x42);
         assert_eq!(cpu.registers[0], 0x42);
         assert_eq!(cpu.get_reg(Register::V0), 0x42);
+    }
+
+    #[test]
+    fn load_font() {
+        let cpu = CPU::new();
+        let mut mem = Memory::new();
+        let res = cpu.load_font(&mut mem, &FONT_DATA);
+        assert!(res.is_ok());
     }
 
     #[test]
@@ -410,7 +541,7 @@ mod tests {
         let mut cpu = CPU::new();
         let mut display = Display::new();
         let ins = Instruction(0x501F);
-        let res =  cpu.execute(&mut mem, &mut display, ins);
+        let res = cpu.execute(&mut mem, &mut display, ins);
         assert!(res.is_err());
     }
 
@@ -420,7 +551,7 @@ mod tests {
         let mut cpu = CPU::new();
         let mut display = Display::new();
         let ins = Instruction(0x60FF);
-        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0xFF);
     }
 
@@ -431,7 +562,7 @@ mod tests {
         let mut display = Display::new();
         let ins = Instruction(0x70FF);
         cpu.set_reg(Register::V0, 0x01);
-        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0x00);
     }
 
@@ -443,7 +574,7 @@ mod tests {
         let ins = Instruction(0x8010);
         cpu.set_reg(Register::V0, 0x00);
         cpu.set_reg(Register::V1, 0xFF);
-        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), cpu.get_reg(Register::V1));
     }
 
@@ -455,7 +586,7 @@ mod tests {
         let ins = Instruction(0x8011);
         cpu.set_reg(Register::V0, 0x0F);
         cpu.set_reg(Register::V1, 0xF0);
-        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0xFF);
     }
 
@@ -467,10 +598,9 @@ mod tests {
         let ins = Instruction(0x8013);
         cpu.set_reg(Register::V0, 0xEF);
         cpu.set_reg(Register::V1, 0xFE);
-        let _ =  cpu.execute(&mut mem, &mut display, ins);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0x11);
     }
-
 
     //0x9000
     #[test]
@@ -498,7 +628,7 @@ mod tests {
     }
 
     //0x0A000
-     #[test]
+    #[test]
     fn instruction_ld_idx() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
@@ -506,7 +636,54 @@ mod tests {
         let ins = Instruction(0xAFFF);
         let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.idx, 0x0FFF);
-    }   
+    }
+
+    //0xB000
+    #[test]
+    fn instruction_jmp_v0() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0xB200);
+        cpu.set_reg(Register::V0, 0x42);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(cpu.pc, 0x0242);
+    }
+
+    //0xC000
+    fn instruction_reg_rnd() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0xC0FF);
+        unimplemented!();
+    }
+
+    #[test]
+    fn logo() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let data = [
+            0x00, 0xE0, 0xA2, 0x2A, 0x60, 0x0C, 0x61, 0x08, 0xD0, 0x1F, 0x70, 0x09, 0xA2, 0x39,
+            0xD0, 0x1F, 0xA2, 0x48, 0x70, 0x08, 0xD0, 0x1F, 0x70, 0x04, 0xA2, 0x57, 0xD0, 0x1F,
+            0x70, 0x08, 0xA2, 0x66, 0xD0, 0x1F, 0x70, 0x08, 0xA2, 0x75, 0xD0, 0x1F, 0x12, 0x28,
+            0xFF, 0x00, 0xFF, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0x3C, 0x00, 0xFF, 0x00,
+            0xFF, 0xFF, 0x00, 0xFF, 0x00, 0x38, 0x00, 0x3F, 0x00, 0x3F, 0x00, 0x38, 0x00, 0xFF,
+            0x00, 0xFF, 0x80, 0x00, 0xE0, 0x00, 0xE0, 0x00, 0x80, 0x00, 0x80, 0x00, 0xE0, 0x00,
+            0xE0, 0x00, 0x80, 0xF8, 0x00, 0xFC, 0x00, 0x3E, 0x00, 0x3F, 0x00, 0x3B, 0x00, 0x39,
+            0x00, 0xF8, 0x00, 0xF8, 0x03, 0x00, 0x07, 0x00, 0x0F, 0x00, 0xBF, 0x00, 0xFB, 0x00,
+            0xF3, 0x00, 0xE3, 0x00, 0x43, 0xE0, 0x00, 0xE0, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
+            0x00, 0x80, 0x00, 0xE0, 0x00, 0xE0,
+        ];
+        mem.load(&data, cpu.pc as usize);
+        for i in 0..25 {
+            let ins = cpu.fetch(&mem).unwrap();
+            cpu.execute(&mut mem, &mut display, ins);
+        }
+        println!("{}", display);
+        
 
 
+    }
 }
