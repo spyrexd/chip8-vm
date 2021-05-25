@@ -38,8 +38,8 @@ pub struct Display {
 impl fmt::Display for Display {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, v) in self.data.iter().enumerate() {
-            if i % self.x == 0  && i > 0{
-                write!(f, "\n" )?;
+            if i % self.x == 0 && i > 0 {
+                write!(f, "\n")?;
             }
             if *v == 0x0 {
                 write!(f, " ")?;
@@ -167,7 +167,6 @@ pub enum OpCode {
 pub enum Mode {
     Debug,
     Normal,
-
 }
 #[derive(Debug)]
 pub struct CPU {
@@ -221,7 +220,7 @@ impl CPU {
     ) -> Result<(), CpuError> {
         match self.mode {
             Mode::Debug => println!("{:X?}", self),
-            _ => {},
+            _ => {}
         }
         let opcode = instruction.opcode()?;
         match opcode {
@@ -262,40 +261,40 @@ impl CPU {
                 let registers = instruction.registers()?;
                 let value = instruction.low_byte();
                 self.set_reg(registers.0, value);
-            },
+            }
             OpCode::OC_7 => {
                 let registers = instruction.registers()?;
                 let value = instruction.low_byte();
                 let current_reg_value = self.get_reg(registers.0);
                 self.set_reg(registers.0, current_reg_value.wrapping_add(value));
-            },
+            }
             OpCode::OC_8 => {
                 let registers = instruction.registers()?;
                 match instruction.last_nibble() {
                     0x0 => self.set_reg(registers.0, self.get_reg(registers.1)),
-                    0x1 =>  { 
+                    0x1 => {
                         let vx = self.get_reg(registers.0);
                         let vy = self.get_reg(registers.1);
                         self.set_reg(registers.0, vx | vy);
-                    }, 
-                    0x2 =>  { 
+                    }
+                    0x2 => {
                         let vx = self.get_reg(registers.0);
                         let vy = self.get_reg(registers.1);
                         self.set_reg(registers.0, vx & vy);
-                    }, 
-                    0x3 =>  { 
+                    }
+                    0x3 => {
                         let vx = self.get_reg(registers.0);
                         let vy = self.get_reg(registers.1);
                         self.set_reg(registers.0, vx ^ vy);
-                    }, 
-                    0x4 =>  { 
+                    }
+                    0x4 => {
                         let vx = self.get_reg(registers.0);
                         let vy = self.get_reg(registers.1);
                         let (add, overflow) = vx.overflowing_add(vy);
                         self.set_reg(registers.0, add);
                         self.set_reg(Register::VF, overflow as u8);
-                    }, 
-                    0x5 =>  { 
+                    }
+                    0x5 => {
                         let vx = self.get_reg(registers.0);
                         let vy = self.get_reg(registers.1);
                         self.set_reg(Register::VF, 1);
@@ -305,14 +304,14 @@ impl CPU {
                             self.set_reg(registers.0, vx.wrapping_sub(vy));
                             self.set_reg(Register::VF, 0);
                         }
-                    }, 
-                    0x6 =>  { 
+                    }
+                    0x6 => {
                         let vx = self.get_reg(registers.0);
                         self.set_reg(Register::VF, vx & 0x01);
-                        let shr  = vx >> 1;
+                        let shr = vx >> 1;
                         self.set_reg(registers.0, shr);
-                    }, 
-                    0x7 =>  { 
+                    }
+                    0x7 => {
                         let vx = self.get_reg(registers.0);
                         let vy = self.get_reg(registers.1);
                         self.set_reg(Register::VF, 1);
@@ -322,17 +321,17 @@ impl CPU {
                             self.set_reg(registers.0, vy.wrapping_sub(vx));
                             self.set_reg(Register::VF, 0);
                         }
-                    },
-                    0xE =>  { 
+                    }
+                    0xE => {
                         let vx = self.get_reg(registers.0);
                         self.set_reg(Register::VF, (vx & 0x80) >> 7);
-                        let shl  = vx << 1;
+                        let shl = vx << 1;
                         self.set_reg(registers.0, shl);
-                    }, 
+                    }
                     _ => return Err(CpuError::InvalidInstruction(instruction.0)),
                 }
-            },
-            OpCode::OC_9 => match instruction.last_nibble(){
+            }
+            OpCode::OC_9 => match instruction.last_nibble() {
                 0x0 => {
                     let registers = instruction.registers()?;
                     if self.get_reg(registers.0) != self.get_reg(registers.1) {
@@ -348,7 +347,18 @@ impl CPU {
                 self.pc = instruction.address() + self.get_reg(Register::V0) as u16;
             }
             OpCode::OC_C => {
-                unimplemented!("OpCode not handled")
+                use rand::prelude::*;
+                use rand::thread_rng;
+
+                let mut rng = rand::thread_rng();
+                let rand_byte: u8 = rng.gen();
+
+                let registers = instruction.registers()?;
+                let value = instruction.low_byte();
+                self.set_reg(registers.0, value & rand_byte);
+
+
+
             }
             OpCode::OC_D => {
                 let registers = instruction.registers()?;
@@ -357,7 +367,11 @@ impl CPU {
                 let y = self.get_reg(registers.1) % display.y as u8;
                 self.set_reg(Register::VF, 0x0);
 
-                let collision = display.draw(&x, &y, &memory.data[self.idx as usize..self.idx as usize+value]);
+                let collision = display.draw(
+                    &x,
+                    &y,
+                    &memory.data[self.idx as usize..self.idx as usize + value],
+                );
                 self.set_reg(Register::VF, collision as u8);
             }
             OpCode::OC_E => {
@@ -381,7 +395,6 @@ struct Instruction(u16);
 impl fmt::Debug for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Instruction(0x{:04X})", self.0)
-        
     }
 }
 
@@ -725,7 +738,7 @@ mod tests {
         let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0x7F);
         assert_eq!(cpu.get_reg(Register::VF), 0x01);
-        
+
         cpu.set_reg(Register::V0, 0x02);
         let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0x01);
@@ -749,7 +762,6 @@ mod tests {
         let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0xFF);
         assert_eq!(cpu.get_reg(Register::VF), 0x00);
-  
     }
 
     #[test]
@@ -763,12 +775,11 @@ mod tests {
         println!("{:?}", cpu);
         assert_eq!(cpu.get_reg(Register::V0), 0xFE);
         assert_eq!(cpu.get_reg(Register::VF), 0x01);
-        
+
         cpu.set_reg(Register::V0, 0x01);
         let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0x02);
         assert_eq!(cpu.get_reg(Register::VF), 0x00);
- 
     }
 
     //0x9000
@@ -825,7 +836,8 @@ mod tests {
         let mut cpu = CPU::new();
         let mut display = Display::new();
         let ins = Instruction(0xC0FF);
-        unimplemented!();
+        let res  = cpu.execute(&mut mem, &mut display, ins);
+        assert!(res.is_ok());
     }
 
     //0xD0000
@@ -902,7 +914,6 @@ mod tests {
         cpu.idx = 0x0001;
         let ins = Instruction(0xF01E);
         assert_eq!(cpu.idx, 0x0043);
-        
     }
 
     #[test]
@@ -923,12 +934,11 @@ mod tests {
     fn store_all_reg_from_idx() {
         let ins = Instruction(0xF055);
         unimplemented!()
-    } 
+    }
 
     #[test]
     fn load_all_reg_from_idx() {
         let ins = Instruction(0xF065);
         unimplemented!()
-    } 
-
+    }
 }
