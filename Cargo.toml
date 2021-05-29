@@ -1,5 +1,5 @@
 [package]
-name = "chip8-rs"
+name = "chip8-vm"
 version = "0.1.0"
 authors = ["Matthew Taylor <matt@cyberbacon.dev>"]
 edition = "2018"
