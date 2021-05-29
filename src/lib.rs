@@ -356,9 +356,6 @@ impl CPU {
                 let registers = instruction.registers()?;
                 let value = instruction.low_byte();
                 self.set_reg(registers.0, value & rand_byte);
-
-
-
             }
             OpCode::OC_D => {
                 let registers = instruction.registers()?;
@@ -375,10 +372,57 @@ impl CPU {
                 self.set_reg(Register::VF, collision as u8);
             }
             OpCode::OC_E => {
-                unimplemented!("OpCode not handled")
+                let registers = instruction.registers()?;
+                match instruction.low_byte() {
+                    0x9E => {
+                        unimplemented!("OpCode not handled");
+                    }
+                    0xA1 => {
+                        unimplemented!("OpCode not handled");
+                    }
+                    _ => return Err(CpuError::InvalidInstruction(instruction.0)),
+                }
             }
             OpCode::OC_F => {
-                unimplemented!("OpCode not handled")
+                let registers = instruction.registers()?;
+                match instruction.low_byte() {
+                    0x07 => self.set_reg(registers.0, self.delay),
+                    0x15 => self.delay = self.get_reg(registers.0),
+                    0x18 => self.sound = self.get_reg(registers.0),
+                    0x1E => {
+                        let add = self.idx.overflowing_add(self.get_reg(registers.0) as u16);
+                        self.idx = add.0;
+                        self.set_reg(Register::VF, add.1 as u8);
+                    }
+                    0x0A => {
+                        unimplemented!("OpCode not handled")
+                    }
+                    0x29 => {
+                        let fc = self.get_reg(registers.0);
+                        self.idx = 0x50 + (fc as u16 * 5u16);
+                    }
+                    0x33 => {
+                        let num = self.get_reg(registers.0);
+                        let hundreds = num / 100u8;
+                        let tens = (num % 100u8) / 10u8;
+                        let ones = num - (hundreds * 100) - (tens * 10);
+                        memory[self.idx] = hundreds;
+                        memory[self.idx + 1u16] = tens;
+                        memory[self.idx + 2u16] = ones;
+                    }
+                    0x55 => {
+                        for i in 0..(registers.0 as u8 + 1) {
+                            memory[self.idx + i as u16] = self.get_reg(Register::try_from(i)?);
+                        }
+                    }
+                    0x65 => {
+                        for i in 0..(registers.0 as u8 + 1) {
+                            let reg = Register::try_from(i)?;
+                            self.set_reg(reg, memory[self.idx + i as u16]);
+                        }
+                    }
+                    _ => return Err(CpuError::InvalidInstruction(instruction.0)),
+                }
             }
         }
         Ok(())
@@ -836,7 +880,7 @@ mod tests {
         let mut cpu = CPU::new();
         let mut display = Display::new();
         let ins = Instruction(0xC0FF);
-        let res  = cpu.execute(&mut mem, &mut display, ins);
+        let res = cpu.execute(&mut mem, &mut display, ins);
         assert!(res.is_ok());
     }
 
@@ -869,76 +913,122 @@ mod tests {
     //OxE0000
     #[test]
     fn skip_next_instruction_key_pressed() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
         unimplemented!();
     }
 
     #[test]
     fn skip_next_instruction_key_not_pressed() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
         unimplemented!();
     }
 
     //0xF000
     #[test]
     fn ld_dt_ref() {
+        let mut mem = Memory::new();
         let mut cpu = CPU::new();
+        let mut display = Display::new();
         cpu.delay = 0x42;
         let ins = Instruction(0xF007);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.get_reg(Register::V0), 0x42);
     }
 
     #[test]
     fn wait_for_key_press() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
         unimplemented!();
     }
 
     #[test]
     fn set_delay_timer() {
+        let mut mem = Memory::new();
         let mut cpu = CPU::new();
+        let mut display = Display::new();
         cpu.set_reg(Register::V0, 0x42);
         let ins = Instruction(0xF015);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.delay, 0x42);
     }
 
     #[test]
     fn set_sound_timer() {
+        let mut mem = Memory::new();
         let mut cpu = CPU::new();
+        let mut display = Display::new();
         cpu.set_reg(Register::V0, 0x42);
         let ins = Instruction(0xF018);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.sound, 0x42);
     }
 
     #[test]
     fn idx_add_reg() {
+        let mut mem = Memory::new();
         let mut cpu = CPU::new();
+        let mut display = Display::new();
         cpu.set_reg(Register::V0, 0x42);
         cpu.idx = 0x0001;
         let ins = Instruction(0xF01E);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         assert_eq!(cpu.idx, 0x0043);
+        assert_eq!(cpu.get_reg(Register::VF), 0x00);
     }
 
     #[test]
     fn set_idx_to_digit() {
+        let mut mem = Memory::new();
         let mut cpu = CPU::new();
+        let mut display = Display::new();
         cpu.set_reg(Register::V0, 0x42);
         let ins = Instruction(0xF029);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
         unimplemented!();
     }
 
     #[test]
     fn store_bcd_at_idx() {
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
         let ins = Instruction(0xF033);
-        unimplemented!()
+        cpu.set_reg(Register::V0, 0xFF);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(mem[cpu.idx], 2 as u8);
+        assert_eq!(mem[cpu.idx + 1], 5 as u8);
+        assert_eq!(mem[cpu.idx + 2], 5 as u8);
     }
 
     #[test]
     fn store_all_reg_from_idx() {
-        let ins = Instruction(0xF055);
-        unimplemented!()
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0xF155);
+        cpu.set_reg(Register::V0, 0x01);
+        cpu.set_reg(Register::V1, 0xFF);
+        let _ = cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(mem[cpu.idx], 0x01);
+        assert_eq!(mem[cpu.idx + 0x0001], 0xFF);
     }
 
     #[test]
     fn load_all_reg_from_idx() {
-        let ins = Instruction(0xF065);
-        unimplemented!()
+        let mut mem = Memory::new();
+        let mut cpu = CPU::new();
+        let mut display = Display::new();
+        let ins = Instruction(0xF165);
+        mem[cpu.idx] = 0x01;
+        mem[cpu.idx + 0x0001] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display, ins);
+        assert_eq!(cpu.get_reg(Register::V0), 0x01);
+        assert_eq!(cpu.get_reg(Register::V1), 0xFF);
     }
 }
