@@ -1,7 +1,6 @@
 use bitvec::prelude::*;
-use derive_try_from_primitive::TryFromPrimitive;
 use pretty_hex::pretty_hex;
-use std::{convert::TryFrom, fmt};
+use std::fmt;
 use std::{ops, usize};
 
 const MEM_SIZE: usize = 4096;
@@ -101,66 +100,9 @@ impl Display {
 #[derive(Debug)]
 pub enum CpuError {
     InvalidMemoryAccess(u16),
-    InvalidRegister(<Register as TryFrom<u8>>::Error),
-    InvalidOpCode(<OpCode as TryFrom<u16>>::Error),
     InvalidInstruction(u16),
     EmptyStack,
     MemoryWriteError,
-}
-
-impl From<<Register as TryFrom<u8>>::Error> for CpuError {
-    fn from(err: <Register as TryFrom<u8>>::Error) -> CpuError {
-        CpuError::InvalidRegister(err)
-    }
-}
-
-impl From<<OpCode as TryFrom<u16>>::Error> for CpuError {
-    fn from(err: <OpCode as TryFrom<u16>>::Error) -> CpuError {
-        CpuError::InvalidOpCode(err)
-    }
-}
-
-#[derive(Debug, TryFromPrimitive, PartialEq, Clone, Copy)]
-#[repr(u8)]
-pub enum Register {
-    V0 = 0x0,
-    V1,
-    V2,
-    V3,
-    V4,
-    V5,
-    V6,
-    V7,
-    V8,
-    V9,
-    VA,
-    VB,
-    VC,
-    VD,
-    VE,
-    VF,
-}
-
-#[derive(Debug, TryFromPrimitive, PartialEq)]
-#[repr(u16)]
-#[allow(non_camel_case_types)]
-pub enum OpCode {
-    OC_0 = 0x0000,
-    OC_1 = 0x1000,
-    OC_2 = 0x2000,
-    OC_3 = 0x3000,
-    OC_4 = 0x4000,
-    OC_5 = 0x5000,
-    OC_6 = 0x6000,
-    OC_7 = 0x7000,
-    OC_8 = 0x8000,
-    OC_9 = 0x9000,
-    OC_A = 0xA000,
-    OC_B = 0xB000,
-    OC_C = 0xC000,
-    OC_D = 0xD000,
-    OC_E = 0xE000,
-    OC_F = 0xF000,
 }
 
 #[derive(Debug)]
@@ -172,7 +114,7 @@ pub enum Mode {
 pub struct CPU {
     pc: u16,
     idx: u16,
-    registers: [u8; 16],
+    v: [u8; 16],
     delay: u8,
     sound: u8,
     stack: Vec<u16>,
@@ -185,7 +127,7 @@ impl CPU {
         CPU {
             pc: 0x0200,
             idx: 0x000,
-            registers: [0x0; 16],
+            v: [0x0; 16],
             delay: 0x0,
             sound: 0x0,
             stack: vec![],
@@ -194,186 +136,172 @@ impl CPU {
         }
     }
 
-    fn set_reg(&mut self, reg: Register, value: u8) {
-        self.registers[reg as usize] = value;
-    }
-
-    fn get_reg(&self, reg: Register) -> u8 {
-        self.registers[reg as usize]
-    }
-
     fn fetch(&mut self, memory: &Memory) -> Result<Instruction, CpuError> {
-        if self.pc >= MEM_SIZE as u16 {
+        if self.pc >= (MEM_SIZE - 2) as u16 {
             return Err(CpuError::InvalidMemoryAccess(self.pc));
         }
-        let ins = Instruction(((memory[self.pc] as u16) << 8) | memory[self.pc + 1] as u16);
+        self.instruction = Instruction::read(&memory.data[(self.pc as usize)..]);
         self.pc += 2;
-        self.instruction = ins;
-        Ok(ins)
+        Ok(self.instruction)
     }
 
-    fn execute(
-        &mut self,
-        memory: &mut Memory,
-        display: &mut Display,
-        instruction: Instruction,
-    ) -> Result<(), CpuError> {
+    fn execute(&mut self, memory: &mut Memory, display: &mut Display) -> Result<(), CpuError> {
         match self.mode {
             Mode::Debug => println!("{:X?}", self),
             _ => {}
         }
-        let opcode = instruction.opcode()?;
+        let instruction = self.instruction;
+        let opcode = instruction.opcode();
         match opcode {
-            OpCode::OC_0 => match instruction.low_byte() {
+            0x0 => match instruction.byte() {
                 0xE0 => display.cls(),
                 0xEE => self.pc = self.stack.pop().ok_or(CpuError::EmptyStack)?,
                 _ => return Err(CpuError::InvalidInstruction(instruction.0)),
             },
-            OpCode::OC_1 => self.pc = instruction.address(),
-            OpCode::OC_2 => {
+            0x1 => self.pc = instruction.addr(),
+            0x2 => {
                 self.stack.push(self.pc);
-                self.pc = instruction.address();
+                self.pc = instruction.addr();
             }
-            OpCode::OC_3 => {
-                let registers = instruction.registers()?;
-                let value = instruction.low_byte();
-                if self.get_reg(registers.0) == value {
+            0x3 => {
+                let value = instruction.byte();
+                if self.v[instruction.x() as usize] == value {
                     self.pc += 2;
                 }
             }
-            OpCode::OC_4 => {
-                let registers = instruction.registers()?;
-                let value = instruction.low_byte();
-                if self.get_reg(registers.0) != value {
+            0x4 => {
+                
+                let value = instruction.byte();
+                if self.v[instruction.x() as usize] != value {
                     self.pc += 2;
                 }
             }
-            OpCode::OC_5 => match instruction.last_nibble() {
+            0x5 => match instruction.nibble() {
                 0x0 => {
-                    let registers = instruction.registers()?;
-                    if self.get_reg(registers.0) == self.get_reg(registers.1) {
+                    
+                    if self.v[instruction.x() as usize] == self.v[instruction.y() as usize] {
                         self.pc += 2;
                     }
                 }
                 _ => return Err(CpuError::InvalidInstruction(instruction.0)),
             },
-            OpCode::OC_6 => {
-                let registers = instruction.registers()?;
-                let value = instruction.low_byte();
-                self.set_reg(registers.0, value);
+            0x6 => {
+                
+                let value = instruction.byte();
+                self.v[instruction.x() as usize] = value;
             }
-            OpCode::OC_7 => {
-                let registers = instruction.registers()?;
-                let value = instruction.low_byte();
-                let current_reg_value = self.get_reg(registers.0);
-                self.set_reg(registers.0, current_reg_value.wrapping_add(value));
+            0x7 => {
+                
+                let value = instruction.byte();
+                let current_reg_value = self.v[instruction.x() as usize];
+                self.v[instruction.x() as usize] = current_reg_value.wrapping_add(value);
             }
-            OpCode::OC_8 => {
-                let registers = instruction.registers()?;
-                match instruction.last_nibble() {
-                    0x0 => self.set_reg(registers.0, self.get_reg(registers.1)),
+            0x8 => {
+                
+                match instruction.nibble() {
+                    0x0 => self.v[instruction.x() as usize] = self.v[instruction.y() as usize],
                     0x1 => {
-                        let vx = self.get_reg(registers.0);
-                        let vy = self.get_reg(registers.1);
-                        self.set_reg(registers.0, vx | vy);
+                        let vx = self.v[instruction.x() as usize];
+                        let vy = self.v[instruction.y() as usize];
+                        self.v[instruction.x() as usize] = vx | vy;
                     }
                     0x2 => {
-                        let vx = self.get_reg(registers.0);
-                        let vy = self.get_reg(registers.1);
-                        self.set_reg(registers.0, vx & vy);
+                        let vx = self.v[instruction.x() as usize];
+                        let vy = self.v[instruction.y() as usize];
+                        self.v[instruction.x() as usize] =  vx & vy;
                     }
                     0x3 => {
-                        let vx = self.get_reg(registers.0);
-                        let vy = self.get_reg(registers.1);
-                        self.set_reg(registers.0, vx ^ vy);
+                        let vx = self.v[instruction.x() as usize];
+                        let vy = self.v[instruction.y() as usize];
+                        self.v[instruction.x() as usize]  = vx ^ vy;
                     }
                     0x4 => {
-                        let vx = self.get_reg(registers.0);
-                        let vy = self.get_reg(registers.1);
+                        let vx = self.v[instruction.x() as usize];
+                        let vy = self.v[instruction.y() as usize];
                         let (add, overflow) = vx.overflowing_add(vy);
-                        self.set_reg(registers.0, add);
-                        self.set_reg(Register::VF, overflow as u8);
+                        self.v[instruction.x() as usize] = add;
+                        self.v[0xF] = overflow as u8;
                     }
                     0x5 => {
-                        let vx = self.get_reg(registers.0);
-                        let vy = self.get_reg(registers.1);
-                        self.set_reg(Register::VF, 1);
+                        let vx = self.v[instruction.x() as usize];
+                        let vy = self.v[instruction.y() as usize];
+                        self.v[0xF] =  1;
                         if vx > vy {
-                            self.set_reg(registers.0, vx - vy);
+                            self.v[instruction.x() as usize] =  vx - vy;
                         } else {
-                            self.set_reg(registers.0, vx.wrapping_sub(vy));
-                            self.set_reg(Register::VF, 0);
+                            self.v[instruction.x() as usize] =  vx.wrapping_sub(vy);
+                            self.v[0xF] = 0;
                         }
                     }
                     0x6 => {
-                        let vx = self.get_reg(registers.0);
-                        self.set_reg(Register::VF, vx & 0x01);
+                        let vx = self.v[instruction.x() as usize];
+                        self.v[0xF] = vx & 0x01;
                         let shr = vx >> 1;
-                        self.set_reg(registers.0, shr);
+                        self.v[instruction.x() as usize] = shr;
                     }
                     0x7 => {
-                        let vx = self.get_reg(registers.0);
-                        let vy = self.get_reg(registers.1);
-                        self.set_reg(Register::VF, 1);
+                        let vx = self.v[instruction.x() as usize];
+                        let vy = self.v[instruction.y() as usize];
+                        self.v[0xF] =  0x01;
                         if vy > vx {
-                            self.set_reg(registers.0, vy - vx);
+                            self.v[instruction.x() as usize] = vy - vx;
                         } else {
-                            self.set_reg(registers.0, vy.wrapping_sub(vx));
-                            self.set_reg(Register::VF, 0);
+                            self.v[instruction.x() as usize] = vy.wrapping_sub(vx);
+                            self.v[0xF] = 0x0;
                         }
                     }
                     0xE => {
-                        let vx = self.get_reg(registers.0);
-                        self.set_reg(Register::VF, (vx & 0x80) >> 7);
+                        let vx = self.v[instruction.x() as usize];
+                        self.v[0xF] = (vx & 0x80) >> 7;
                         let shl = vx << 1;
-                        self.set_reg(registers.0, shl);
+                        self.v[instruction.x() as usize] = shl;
                     }
                     _ => return Err(CpuError::InvalidInstruction(instruction.0)),
                 }
             }
-            OpCode::OC_9 => match instruction.last_nibble() {
+            0x9 => match instruction.nibble() {
                 0x0 => {
-                    let registers = instruction.registers()?;
-                    if self.get_reg(registers.0) != self.get_reg(registers.1) {
+                    
+                    if self.v[instruction.x() as usize] != self.v[instruction.y() as usize] {
                         self.pc += 2;
                     }
                 }
                 _ => return Err(CpuError::InvalidInstruction(instruction.0)),
             },
-            OpCode::OC_A => {
-                self.idx = instruction.address();
+            0xA => {
+                self.idx = instruction.addr();
             }
-            OpCode::OC_B => {
-                self.pc = instruction.address() + self.get_reg(Register::V0) as u16;
+            0xB => {
+                self.pc = instruction.addr() + self.v[0x0] as u16;
             }
-            OpCode::OC_C => {
+            0xC => {
                 use rand::prelude::*;
                 use rand::thread_rng;
 
                 let mut rng = rand::thread_rng();
                 let rand_byte: u8 = rng.gen();
 
-                let registers = instruction.registers()?;
-                let value = instruction.low_byte();
-                self.set_reg(registers.0, value & rand_byte);
+                
+                let value = instruction.byte();
+                self.v[instruction.x() as usize] = value & rand_byte;
             }
-            OpCode::OC_D => {
-                let registers = instruction.registers()?;
-                let value = instruction.last_nibble() as usize;
-                let x = self.get_reg(registers.0) % display.x as u8;
-                let y = self.get_reg(registers.1) % display.y as u8;
-                self.set_reg(Register::VF, 0x0);
+            0xD => {
+                
+                let value = instruction.nibble() as usize;
+                let x = self.v[instruction.x() as usize] % display.x as u8;
+                let y = self.v[instruction.y() as usize] % display.y as u8;
+                self.v[0xF] = 0x0;
 
                 let collision = display.draw(
                     &x,
                     &y,
                     &memory.data[self.idx as usize..self.idx as usize + value],
                 );
-                self.set_reg(Register::VF, collision as u8);
+                self.v[0xF] = collision as u8;
             }
-            OpCode::OC_E => {
-                let registers = instruction.registers()?;
-                match instruction.low_byte() {
+            0xE => {
+                
+                match instruction.byte() {
                     0x9E => {
                         unimplemented!("OpCode not handled");
                     }
@@ -383,26 +311,26 @@ impl CPU {
                     _ => return Err(CpuError::InvalidInstruction(instruction.0)),
                 }
             }
-            OpCode::OC_F => {
-                let registers = instruction.registers()?;
-                match instruction.low_byte() {
-                    0x07 => self.set_reg(registers.0, self.delay),
-                    0x15 => self.delay = self.get_reg(registers.0),
-                    0x18 => self.sound = self.get_reg(registers.0),
+            0xF => {
+                
+                match instruction.byte() {
+                    0x07 => self.v[instruction.x() as usize] = self.delay,
+                    0x15 => self.delay = self.v[instruction.x() as usize],
+                    0x18 => self.sound = self.v[instruction.x() as usize],
                     0x1E => {
-                        let add = self.idx.overflowing_add(self.get_reg(registers.0) as u16);
+                        let add = self.idx.overflowing_add(self.v[instruction.x() as usize] as u16);
                         self.idx = add.0;
-                        self.set_reg(Register::VF, add.1 as u8);
+                        self.v[0xF] = add.1 as u8;
                     }
                     0x0A => {
                         unimplemented!("OpCode not handled")
                     }
                     0x29 => {
-                        let fc = self.get_reg(registers.0);
+                        let fc = self.v[instruction.x() as usize];
                         self.idx = 0x50 + (fc as u16 * 5u16);
                     }
                     0x33 => {
-                        let num = self.get_reg(registers.0);
+                        let num = self.v[instruction.x() as usize];
                         let hundreds = num / 100u8;
                         let tens = (num % 100u8) / 10u8;
                         let ones = num - (hundreds * 100) - (tens * 10);
@@ -411,19 +339,19 @@ impl CPU {
                         memory[self.idx + 2u16] = ones;
                     }
                     0x55 => {
-                        for i in 0..(registers.0 as u8 + 1) {
-                            memory[self.idx + i as u16] = self.get_reg(Register::try_from(i)?);
+                        for i in 0..(instruction.x() as u8 + 1) {
+                            memory[self.idx + i as u16] = self.v[i as usize];
                         }
                     }
                     0x65 => {
-                        for i in 0..(registers.0 as u8 + 1) {
-                            let reg = Register::try_from(i)?;
-                            self.set_reg(reg, memory[self.idx + i as u16]);
+                        for i in 0..(instruction.x() as u8 + 1) {
+                            self.v[i as usize] = memory[self.idx + i as u16];
                         }
                     }
                     _ => return Err(CpuError::InvalidInstruction(instruction.0)),
                 }
             }
+            _ => return Err(CpuError::InvalidInstruction(instruction.0)),
         }
         Ok(())
     }
@@ -436,39 +364,41 @@ impl CPU {
 #[derive(PartialEq, Clone, Copy)]
 struct Instruction(u16);
 
+impl Instruction {
+    fn read(memory: &[u8]) -> Self {
+        Instruction(((memory[0] as u16) << 8) | memory[1] as u16)
+    }
+
+    fn opcode(&self) -> u8 {
+        (self.0 >> 12 & 0x0F) as u8
+    }
+
+    fn x(&self) -> u8 {
+        (self.0 >> 8 & 0x0F) as u8
+    }
+
+    fn y(&self) -> u8 {
+        (self.0 >> 4 & 0x0F) as u8
+    }
+
+    fn nibble(&self) -> u8 {
+        (self.0 & 0x000F) as u8
+    }
+
+    fn byte(&self) -> u8 {
+        (self.0 & 0x00FF) as u8
+    }
+
+    fn addr(&self) -> u16 {
+        self.0 & 0x0FFF
+    }
+}
+
 impl fmt::Debug for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Instruction(0x{:04X})", self.0)
     }
 }
-
-impl Instruction {
-    fn opcode(&self) -> Result<OpCode, CpuError> {
-        Ok(OpCode::try_from(self.0 & 0xF000)?)
-    }
-
-    fn address(&self) -> u16 {
-        self.0 & 0x0FFF
-    }
-
-    fn low_byte(&self) -> u8 {
-        (self.0 & 0x00FF) as u8
-    }
-
-    fn registers(&self) -> Result<(Register, Register), CpuError> {
-        let first = (self.0 & 0x0F00) >> 8;
-        let second = (self.0 & 0x00F0) >> 4;
-        Ok((
-            Register::try_from(first as u8)?,
-            Register::try_from(second as u8)?,
-        ))
-    }
-
-    fn last_nibble(&self) -> u8 {
-        (self.0 & 0x000F) as u8
-    }
-}
-
 pub struct Memory {
     data: Vec<u8>,
 }
@@ -536,22 +466,17 @@ mod tests {
     #[test]
     fn instruction_tests() {
         let ins = Instruction(0x1123);
-        assert_eq!(ins.opcode().unwrap(), OpCode::OC_1);
-        assert_eq!(ins.registers().unwrap(), (Register::V1, Register::V2));
-        assert_eq!(ins.address(), 0x0123);
+        assert_eq!(ins.opcode(), 0x01);
+        assert_eq!(ins.x(), 0x1);
+        assert_eq!(ins.y(), 0x2);
+        assert_eq!(ins.byte(), 0x23);
+        assert_eq!(ins.nibble(), 0x03);
+        assert_eq!(ins.addr(), 0x0123);
     }
     #[test]
     fn create_cpu() {
         let cpu = CPU::new();
         assert_eq!(cpu.pc, 0x200);
-    }
-
-    #[test]
-    fn set_and_get_reg() {
-        let mut cpu = CPU::new();
-        cpu.set_reg(Register::V0, 0x42);
-        assert_eq!(cpu.registers[0], 0x42);
-        assert_eq!(cpu.get_reg(Register::V0), 0x42);
     }
 
     #[test]
@@ -586,8 +511,8 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x00E0);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0x00E0);
+        let _ = cpu.execute(&mut mem, &mut display);
     }
 
     #[test]
@@ -595,9 +520,9 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x00EE);
+        cpu.instruction = Instruction(0x00EE);
         cpu.stack.push(0x0123);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.pc, 0x0123);
     }
 
@@ -607,8 +532,8 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x1123);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0x1123);
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.pc, 0x0123);
     }
 
@@ -618,8 +543,8 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x2123);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0x2123);
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(*(cpu.stack.last().unwrap()), 0x0200);
         assert_eq!(cpu.pc, 0x0123);
     }
@@ -630,10 +555,10 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x3042);
+        cpu.instruction = Instruction(0x3042);
         let start_pc = cpu.pc;
-        cpu.set_reg(Register::V0, 0x42);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.v[0x0] = 0x42;
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.pc, start_pc + 2);
     }
 
@@ -643,10 +568,10 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x4042);
+        cpu.instruction = Instruction(0x4042);
         let start_pc = cpu.pc;
-        cpu.set_reg(Register::V0, 0xFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.v[0x0] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.pc, start_pc + 2);
     }
 
@@ -656,11 +581,11 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x5010);
+        cpu.instruction = Instruction(0x5010);
         let start_pc = cpu.pc;
-        cpu.set_reg(Register::V0, 0x42);
-        cpu.set_reg(Register::V1, 0x42);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.v[0x0] = 0x42;
+        cpu.v[0x1] = 0x42;
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.pc, start_pc + 2);
     }
 
@@ -669,8 +594,8 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x501F);
-        let res = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0x501F);
+        let res = cpu.execute(&mut mem, &mut display);
         assert!(res.is_err());
     }
 
@@ -680,9 +605,9 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x60FF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0xFF);
+        cpu.instruction = Instruction(0x60FF);
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0xFF);
     }
 
     //0x7000
@@ -691,10 +616,10 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x70FF);
-        cpu.set_reg(Register::V0, 0x01);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x00);
+        cpu.instruction = Instruction(0x70FF);
+        cpu.v[0x0] = 0x01;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x00);
     }
 
     //0X8000
@@ -703,11 +628,11 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x8010);
-        cpu.set_reg(Register::V0, 0x00);
-        cpu.set_reg(Register::V1, 0xFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), cpu.get_reg(Register::V1));
+        cpu.instruction = Instruction(0x8010);
+        cpu.v[0x0] = 0x00;
+        cpu.v[0x1] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], cpu.v[0x1]);
     }
 
     #[test]
@@ -715,11 +640,11 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x8011);
-        cpu.set_reg(Register::V0, 0x0F);
-        cpu.set_reg(Register::V1, 0xF0);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0xFF);
+        cpu.instruction = Instruction(0x8011);
+        cpu.v[0x0] = 0x0F;
+        cpu.v[0x1] = 0xF0;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0xFF);
     }
 
     #[test]
@@ -727,11 +652,11 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x8013);
-        cpu.set_reg(Register::V0, 0xEF);
-        cpu.set_reg(Register::V1, 0xFE);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x11);
+        cpu.instruction = Instruction(0x8013);
+        cpu.v[0x0] = 0xEF;
+        cpu.v[0x1] = 0xFE;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x11);
     }
 
     #[test]
@@ -739,18 +664,19 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x8014);
-        cpu.set_reg(Register::V0, 0xFF);
-        cpu.set_reg(Register::V1, 0x01);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x00);
-        assert_eq!(cpu.get_reg(Register::VF), 0x01);
+        cpu.instruction = Instruction(0x8014);
+        cpu.v[0x0] = 0xFF;
+        cpu.v[0x1] = 0x01;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x00);
+        assert_eq!(cpu.v[0xF], 0x01);
 
-        cpu.set_reg(Register::V0, 0x41);
-        cpu.set_reg(Register::V1, 0x01);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x42);
-        assert_eq!(cpu.get_reg(Register::VF), 0x00);
+
+        cpu.v[0x0] = 0x41;
+        cpu.v[0x1] = 0x01;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x42);
+        assert_eq!(cpu.v[0xF], 0x00);
     }
 
     #[test]
@@ -758,18 +684,18 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x8015);
-        cpu.set_reg(Register::V0, 0xFF);
-        cpu.set_reg(Register::V1, 0x01);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0xFE);
-        assert_eq!(cpu.get_reg(Register::VF), 0x01);
+        cpu.instruction = Instruction(0x8015);
+        cpu.v[0x0] = 0xFF;
+        cpu.v[0x1] = 0x01;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0xFE);
+        assert_eq!(cpu.v[0xF], 0x01);
 
-        cpu.set_reg(Register::V0, 0x00);
-        cpu.set_reg(Register::V1, 0x01);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0xFF);
-        assert_eq!(cpu.get_reg(Register::VF), 0x00);
+        cpu.v[0x0] = 0x00;
+        cpu.v[0x1] = 0x01;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0xFF);
+        assert_eq!(cpu.v[0xF], 0x00);
     }
 
     #[test]
@@ -777,16 +703,16 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x8006);
-        cpu.set_reg(Register::V0, 0xFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x7F);
-        assert_eq!(cpu.get_reg(Register::VF), 0x01);
+        cpu.instruction = Instruction(0x8006);
+        cpu.v[0x0] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x7F);
+        assert_eq!(cpu.v[0xF], 0x01);
 
-        cpu.set_reg(Register::V0, 0x02);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x01);
-        assert_eq!(cpu.get_reg(Register::VF), 0x00);
+        cpu.v[0x0] = 0x02;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x01);
+        assert_eq!(cpu.v[0xF], 0x00);
     }
 
     #[test]
@@ -794,18 +720,18 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x8017);
-        cpu.set_reg(Register::V0, 0x01);
-        cpu.set_reg(Register::V1, 0xFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0xFE);
-        assert_eq!(cpu.get_reg(Register::VF), 0x01);
+        cpu.instruction = Instruction(0x8017);
+        cpu.v[0x0] = 0x01;
+        cpu.v[0x1] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0xFE);
+        assert_eq!(cpu.v[0xF], 0x01);
 
-        cpu.set_reg(Register::V0, 0x01);
-        cpu.set_reg(Register::V1, 0x00);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0xFF);
-        assert_eq!(cpu.get_reg(Register::VF), 0x00);
+        cpu.v[0x0] = 0x01;
+        cpu.v[0x1] = 0x00;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0xFF);
+        assert_eq!(cpu.v[0xF], 0x00);
     }
 
     #[test]
@@ -813,17 +739,16 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x800E);
-        cpu.set_reg(Register::V0, 0xFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        println!("{:?}", cpu);
-        assert_eq!(cpu.get_reg(Register::V0), 0xFE);
-        assert_eq!(cpu.get_reg(Register::VF), 0x01);
+        cpu.instruction = Instruction(0x800E);
+        cpu.v[0x0] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0xFE);
+        assert_eq!(cpu.v[0xF], 0x01);
 
-        cpu.set_reg(Register::V0, 0x01);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x02);
-        assert_eq!(cpu.get_reg(Register::VF), 0x00);
+        cpu.v[0x0] = 0x01;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x02);
+        assert_eq!(cpu.v[0xF], 0x00);
     }
 
     //0x9000
@@ -832,11 +757,11 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x9010);
+        cpu.instruction = Instruction(0x9010);
         let start_pc = cpu.pc;
-        cpu.set_reg(Register::V0, 0x42);
-        cpu.set_reg(Register::V1, 0x84);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.v[0x0] = 0x42;
+        cpu.v[0x1] = 0x84;
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.pc, start_pc + 2);
     }
     #[test]
@@ -844,10 +769,10 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0x9011);
-        cpu.set_reg(Register::V0, 0x42);
-        cpu.set_reg(Register::V1, 0x84);
-        let res = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0x9011);
+        cpu.v[0x0] = 0x42;
+        cpu.v[0x1] = 0x84;
+        let res = cpu.execute(&mut mem, &mut display);
         assert!(res.is_err());
     }
 
@@ -857,8 +782,8 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0xAFFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0xAFFF);
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.idx, 0x0FFF);
     }
 
@@ -868,9 +793,9 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0xB200);
-        cpu.set_reg(Register::V0, 0x42);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0xB200);
+        cpu.v[0x0] = 0x42;
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.pc, 0x0242);
     }
 
@@ -879,8 +804,8 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0xC0FF);
-        let res = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0xC0FF);
+        let res = cpu.execute(&mut mem, &mut display);
         assert!(res.is_ok());
     }
 
@@ -905,7 +830,7 @@ mod tests {
         mem.load(&data, cpu.pc as usize);
         for i in 0..25 {
             let ins = cpu.fetch(&mem).unwrap();
-            cpu.execute(&mut mem, &mut display, ins);
+            cpu.execute(&mut mem, &mut display);
         }
         println!("{}", display);
     }
@@ -934,9 +859,9 @@ mod tests {
         let mut cpu = CPU::new();
         let mut display = Display::new();
         cpu.delay = 0x42;
-        let ins = Instruction(0xF007);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x42);
+        cpu.instruction = Instruction(0xF007);
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x42);
     }
 
     #[test]
@@ -952,9 +877,9 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        cpu.set_reg(Register::V0, 0x42);
-        let ins = Instruction(0xF015);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.v[0x0] = 0x42;
+        cpu.instruction = Instruction(0xF015);
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.delay, 0x42);
     }
 
@@ -963,9 +888,9 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        cpu.set_reg(Register::V0, 0x42);
-        let ins = Instruction(0xF018);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.v[0x0] = 0x42;
+        cpu.instruction = Instruction(0xF018);
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.sound, 0x42);
     }
 
@@ -974,12 +899,12 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        cpu.set_reg(Register::V0, 0x42);
+        cpu.v[0x0] = 0x42;
         cpu.idx = 0x0001;
-        let ins = Instruction(0xF01E);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0xF01E);
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(cpu.idx, 0x0043);
-        assert_eq!(cpu.get_reg(Register::VF), 0x00);
+        assert_eq!(cpu.v[0xF], 0x00);
     }
 
     #[test]
@@ -987,9 +912,9 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        cpu.set_reg(Register::V0, 0x42);
-        let ins = Instruction(0xF029);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.v[0x0] = 0x42;
+        cpu.instruction = Instruction(0xF029);
+        let _ = cpu.execute(&mut mem, &mut display);
         unimplemented!();
     }
 
@@ -998,9 +923,9 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0xF033);
-        cpu.set_reg(Register::V0, 0xFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0xF033);
+        cpu.v[0x0] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(mem[cpu.idx], 2 as u8);
         assert_eq!(mem[cpu.idx + 1], 5 as u8);
         assert_eq!(mem[cpu.idx + 2], 5 as u8);
@@ -1011,10 +936,10 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0xF155);
-        cpu.set_reg(Register::V0, 0x01);
-        cpu.set_reg(Register::V1, 0xFF);
-        let _ = cpu.execute(&mut mem, &mut display, ins);
+        cpu.instruction = Instruction(0xF155);
+        cpu.v[0x0] = 0x01;
+        cpu.v[0x1] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
         assert_eq!(mem[cpu.idx], 0x01);
         assert_eq!(mem[cpu.idx + 0x0001], 0xFF);
     }
@@ -1024,11 +949,11 @@ mod tests {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
         let mut display = Display::new();
-        let ins = Instruction(0xF165);
+        cpu.instruction = Instruction(0xF165);
         mem[cpu.idx] = 0x01;
-        mem[cpu.idx + 0x0001] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display, ins);
-        assert_eq!(cpu.get_reg(Register::V0), 0x01);
-        assert_eq!(cpu.get_reg(Register::V1), 0xFF);
+        mem[cpu.idx + 0x1] = 0xFF;
+        let _ = cpu.execute(&mut mem, &mut display);
+        assert_eq!(cpu.v[0x0], 0x01);
+        assert_eq!(cpu.v[0x1], 0xFF);
     }
 }
