@@ -66,6 +66,32 @@ impl CPU {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.pc = 0x0200;
+        self.idx = 0x000;
+        self.v.copy_from_slice(&[0x00;16]);
+        self.delay = 0x0;
+        self.sound = 0x0;
+        self.stack.clear();
+        self.instruction = Instruction(0x0000);
+    }
+
+    pub fn tick(&mut self) {
+        if self.delay > 0 {
+            self.delay -= 1;
+        }
+        if self.sound > 0 {
+            self.sound -= 1;
+        }
+    }
+
+    pub fn run(&mut self, memory: &mut Memory) -> Result<(), CpuError> {
+        loop {
+            self.fetch(memory)?;
+            self.execute(memory)?;
+        }
+    }
+
     pub fn fetch(&mut self, memory: &Memory) -> Result<Instruction, CpuError> {
         if self.pc >= (MEM_SIZE - 2) as u16 {
             return Err(CpuError::InvalidMemoryAccess(self.pc));
