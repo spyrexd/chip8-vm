@@ -53,7 +53,7 @@ pub struct CPU {
 }
 
 impl CPU {
-    fn new() -> Self {
+    pub fn new() -> Self {
         CPU {
             pc: 0x0200,
             idx: 0x000,
@@ -66,7 +66,7 @@ impl CPU {
         }
     }
 
-    fn fetch(&mut self, memory: &Memory) -> Result<Instruction, CpuError> {
+    pub fn fetch(&mut self, memory: &Memory) -> Result<Instruction, CpuError> {
         if self.pc >= (MEM_SIZE - 2) as u16 {
             return Err(CpuError::InvalidMemoryAccess(self.pc));
         }
@@ -75,7 +75,7 @@ impl CPU {
         Ok(self.instruction)
     }
 
-    fn execute(&mut self, memory: &mut Memory) -> Result<(), CpuError> {
+    pub fn execute(&mut self, memory: &mut Memory) -> Result<(), CpuError> {
         match self.mode {
             Mode::Debug => println!("{:X?}", self),
             _ => {}
@@ -210,12 +210,9 @@ impl CPU {
             }
             0xC => {
                 use rand::prelude::*;
-                use rand::thread_rng;
 
                 let mut rng = rand::thread_rng();
                 let rand_byte: u8 = rng.gen();
-
-                
                 let value = instruction.byte();
                 self.v[instruction.x() as usize] = value & rand_byte;
             }
@@ -312,16 +309,16 @@ impl CPU {
         Ok(())
     }
 
-    fn load_font(&self, memory: &mut Memory, font_data: &[u8]) -> Result<(), CpuError> {
-        memory.load(&font_data, 0x50)
+    pub fn load_font(&self, memory: &mut Memory) -> Result<(), CpuError> {
+        memory.load(&FONT_DATA, 0x50)
     }
 }
 
 #[derive(PartialEq, Clone, Copy)]
-struct Instruction(u16);
+pub struct Instruction(u16);
 
 impl Instruction {
-    fn read(memory: &[u8]) -> Self {
+    pub fn read(memory: &[u8]) -> Self {
         Instruction(((memory[0] as u16) << 8) | memory[1] as u16)
     }
 
@@ -362,7 +359,7 @@ pub struct Memory {
 }
 
 impl Memory {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Memory {
             data: vec![0u8; MEM_SIZE],
             vram: vec![0u8; DISPLAY_SIZE.0*DISPLAY_SIZE.1],
@@ -370,13 +367,32 @@ impl Memory {
         }
     }
 
-    fn clear(&mut self) {
+    pub fn reset_progam_memory(&mut self) {
         for addr in &mut self.data {
             *addr = 0u8;
         }
     }
 
-    fn load(&mut self, data: &[u8], start: usize) -> Result<(), CpuError> {
+    pub fn reset_vram(&mut self) {
+        for p in &mut self.vram {
+            *p = 0x0;
+        }
+    }
+
+    pub fn reset_kb(&mut self) {
+        for k in &mut self.kb {
+            *k = 0x0;
+        }
+    }
+
+    pub fn reset_all(&mut self) {
+        self.reset_progam_memory();
+        self.reset_vram();
+        self.reset_kb();
+    }
+
+
+    pub fn load(&mut self, data: &[u8], start: usize) -> Result<(), CpuError> {
         if start + data.len() > MEM_SIZE {
             return Err(CpuError::MemoryWriteError);
         }
@@ -435,7 +451,7 @@ mod tests {
         assert_eq!(mem[address], 0x00);
         mem[address] = 0x42;
         assert_eq!(mem[address], 0x42);
-        mem.clear();
+        mem.reset_all();
         assert_eq!(mem[address], 0x00);
     }
 
@@ -459,7 +475,7 @@ mod tests {
     fn load_font() {
         let cpu = CPU::new();
         let mut mem = Memory::new();
-        let res = cpu.load_font(&mut mem, &FONT_DATA);
+        let res = cpu.load_font(&mut mem);
         assert!(res.is_ok());
     }
 
@@ -754,6 +770,7 @@ mod tests {
     }
 
     //0xC000
+    #[test]
     fn instruction_reg_rnd() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
@@ -779,9 +796,9 @@ mod tests {
             0xF3, 0x00, 0xE3, 0x00, 0x43, 0xE0, 0x00, 0xE0, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
             0x00, 0x80, 0x00, 0xE0, 0x00, 0xE0,
         ];
-        mem.load(&data, cpu.pc as usize);
-        for i in 0..25 {
-            let ins = cpu.fetch(&mem).unwrap();
+        let _ = mem.load(&data, cpu.pc as usize);
+        for _i in 0..25 {
+            let _ = cpu.fetch(&mem).unwrap();
             let _ = cpu.execute(&mut mem);
         }
         println!("{}", mem);
