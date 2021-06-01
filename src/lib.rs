@@ -1,4 +1,3 @@
-use bitvec::prelude::*;
 use pretty_hex::pretty_hex;
 use std::fmt;
 use std::{ops, usize};
@@ -27,75 +26,6 @@ const FONT_DATA: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
-
-pub struct Display {
-    x: usize,
-    y: usize,
-    data: Vec<u8>,
-}
-
-impl fmt::Display for Display {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, v) in self.data.iter().enumerate() {
-            if i % self.x == 0 && i > 0 {
-                write!(f, "\n")?;
-            }
-            if *v == 0x0 {
-                write!(f, " ")?;
-            } else {
-                write!(f, "\u{2588}")?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Debug for Display {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_fmt(format_args!("{}", pretty_hex(&self.data)))
-    }
-}
-
-impl Display {
-    fn new() -> Self {
-        Display {
-            x: DISPLAY_SIZE.0,
-            y: DISPLAY_SIZE.1,
-            data: vec![0x0; DISPLAY_SIZE.0 * DISPLAY_SIZE.1],
-        }
-    }
-
-    fn cls(&mut self) {
-        for addr in self.data.as_mut_slice() {
-            *addr = 0x0;
-        }
-    }
-
-    fn draw(&mut self, x: &u8, y: &u8, values: &[u8]) -> bool {
-        let mut collision = false;
-        'row: for (i, v) in values.iter().enumerate() {
-            let row = (*y as usize + i) * self.x;
-            if row >= self.x * self.y {
-                break 'row;
-            }
-            let bits = BitSlice::<Msb0, _>::from_element(v);
-            for (j, b) in bits.iter().enumerate() {
-                let col = *x as usize + j;
-                if col >= self.x {
-                    continue 'row;
-                }
-                let location = row + col;
-                let current = self.data[location];
-                let xor = current ^ *b as u8;
-                if current == 0x1 && xor == 0x0 {
-                    collision = true;
-                }
-                self.data[location] = xor;
-            }
-        }
-        collision
-    }
-}
 
 #[derive(Debug)]
 pub enum CpuError {
@@ -145,7 +75,7 @@ impl CPU {
         Ok(self.instruction)
     }
 
-    fn execute(&mut self, memory: &mut Memory, display: &mut Display) -> Result<(), CpuError> {
+    fn execute(&mut self, memory: &mut Memory) -> Result<(), CpuError> {
         match self.mode {
             Mode::Debug => println!("{:X?}", self),
             _ => {}
@@ -154,7 +84,11 @@ impl CPU {
         let opcode = instruction.opcode();
         match opcode {
             0x0 => match instruction.byte() {
-                0xE0 => display.cls(),
+                0xE0 => { 
+                    for pixel in &mut memory.vram[..] {
+                        *pixel = 0x0;
+                    }
+                }
                 0xEE => self.pc = self.stack.pop().ok_or(CpuError::EmptyStack)?,
                 _ => return Err(CpuError::InvalidInstruction(instruction.0)),
             },
@@ -286,27 +220,44 @@ impl CPU {
                 self.v[instruction.x() as usize] = value & rand_byte;
             }
             0xD => {
-                
-                let value = instruction.nibble() as usize;
-                let x = self.v[instruction.x() as usize] % display.x as u8;
-                let y = self.v[instruction.y() as usize] % display.y as u8;
                 self.v[0xF] = 0x0;
-
-                let collision = display.draw(
-                    &x,
-                    &y,
-                    &memory.data[self.idx as usize..self.idx as usize + value],
-                );
-                self.v[0xF] = collision as u8;
+                let num_rows = instruction.nibble();
+                let start_x  = self.v[instruction.x() as usize] % DISPLAY_SIZE.0 as u8;
+                let start_y = self.v[instruction.y() as usize] % DISPLAY_SIZE.1 as u8;
+                'row: for row in 0..num_rows {
+                    if start_y + row >= DISPLAY_SIZE.1 as u8 {
+                        break 'row;
+                    }
+                    let sprite_data = memory[self.idx + row as u16];
+                    for col in 0..8 {
+                        if col + start_x >= DISPLAY_SIZE.0 as u8 {
+                            continue 'row;
+                        }
+                        let pos: u16 = (start_x + col) as u16 + (start_y + row) as u16 * 64u16;
+                        if sprite_data & (0x80 >> col) != 0 {
+                            if memory.vram[pos as usize] == 0x1 {
+                                self.v[0xF] = 0x1;
+                                memory.vram[pos as usize] = 0x0;
+                            } else {
+                                memory.vram[pos as usize] = 0x1;
+                            }
+                        }
+                    }
+                }
+                
             }
             0xE => {
-                
+                let vx = self.v[instruction.x() as usize] as usize; 
                 match instruction.byte() {
                     0x9E => {
-                        unimplemented!("OpCode not handled");
+                        if memory.kb[vx] == 0x01 {
+                            self.pc += 2;
+                        }
                     }
                     0xA1 => {
-                        unimplemented!("OpCode not handled");
+                        if memory.kb[vx] == 0x00 {
+                            self.pc += 2;
+                        }
                     }
                     _ => return Err(CpuError::InvalidInstruction(instruction.0)),
                 }
@@ -323,11 +274,16 @@ impl CPU {
                         self.v[0xF] = add.1 as u8;
                     }
                     0x0A => {
-                        unimplemented!("OpCode not handled")
+                      if let Some(p) = memory.kb.iter().position(|&x| x == 0x01) {
+                          self.v[instruction.x() as usize] = p as u8;
+                      } else {
+                          self.pc -= 2;
+                      }
+                       
                     }
                     0x29 => {
                         let fc = self.v[instruction.x() as usize];
-                        self.idx = 0x50 + (fc as u16 * 5u16);
+                        self.idx = 0x50u16 + ((fc & 0x0F) as u16 * 5u16);
                     }
                     0x33 => {
                         let num = self.v[instruction.x() as usize];
@@ -401,17 +357,21 @@ impl fmt::Debug for Instruction {
 }
 pub struct Memory {
     data: Vec<u8>,
+    vram: Vec<u8>,
+    kb: Vec<u8>
 }
 
 impl Memory {
     fn new() -> Self {
         Memory {
             data: vec![0u8; MEM_SIZE],
+            vram: vec![0u8; DISPLAY_SIZE.0*DISPLAY_SIZE.1],
+            kb: vec![0u8; 16],
         }
     }
 
     fn clear(&mut self) {
-        for addr in self.data.as_mut_slice() {
+        for addr in &mut self.data {
             *addr = 0u8;
         }
     }
@@ -423,6 +383,22 @@ impl Memory {
         // Find better way
         for (i, v) in data.iter().enumerate() {
             self[(start + i) as u16] = *v;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Memory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, v) in self.vram.iter().enumerate() {
+            if i %  DISPLAY_SIZE.0 == 0 && i > 0 {
+                write!(f, "\n")?;
+            }
+            if *v == 0x0 {
+                write!(f, " ")?;
+            } else {
+                write!(f, "\u{2588}")?;
+            }
         }
         Ok(())
     }
@@ -510,19 +486,17 @@ mod tests {
     fn instruction_cls() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x00E0);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
     }
 
     #[test]
     fn instruction_ret() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x00EE);
         cpu.stack.push(0x0123);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.pc, 0x0123);
     }
 
@@ -531,9 +505,8 @@ mod tests {
     fn instruction_jump() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x1123);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.pc, 0x0123);
     }
 
@@ -542,9 +515,8 @@ mod tests {
     fn instruction_call() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x2123);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(*(cpu.stack.last().unwrap()), 0x0200);
         assert_eq!(cpu.pc, 0x0123);
     }
@@ -554,11 +526,10 @@ mod tests {
     fn instruction_skip_equal_byte() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x3042);
         let start_pc = cpu.pc;
         cpu.v[0x0] = 0x42;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.pc, start_pc + 2);
     }
 
@@ -567,11 +538,10 @@ mod tests {
     fn instruction_skip_not_equal_byte() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x4042);
         let start_pc = cpu.pc;
         cpu.v[0x0] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.pc, start_pc + 2);
     }
 
@@ -580,12 +550,11 @@ mod tests {
     fn instruction_skip_reg_equal() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x5010);
         let start_pc = cpu.pc;
         cpu.v[0x0] = 0x42;
         cpu.v[0x1] = 0x42;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.pc, start_pc + 2);
     }
 
@@ -593,9 +562,8 @@ mod tests {
     fn instruction_skip_reg_equal_fail() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x501F);
-        let res = cpu.execute(&mut mem, &mut display);
+        let res = cpu.execute(&mut mem);
         assert!(res.is_err());
     }
 
@@ -604,9 +572,8 @@ mod tests {
     fn instruction_ld_byte() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x60FF);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0xFF);
     }
 
@@ -615,10 +582,9 @@ mod tests {
     fn instruction_add() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x70FF);
         cpu.v[0x0] = 0x01;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x00);
     }
 
@@ -627,11 +593,10 @@ mod tests {
     fn instruction_ld_reg() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x8010);
         cpu.v[0x0] = 0x00;
         cpu.v[0x1] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], cpu.v[0x1]);
     }
 
@@ -639,11 +604,10 @@ mod tests {
     fn instruction_or_reg() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x8011);
         cpu.v[0x0] = 0x0F;
         cpu.v[0x1] = 0xF0;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0xFF);
     }
 
@@ -651,11 +615,10 @@ mod tests {
     fn instruction_xor_reg() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x8013);
         cpu.v[0x0] = 0xEF;
         cpu.v[0x1] = 0xFE;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x11);
     }
 
@@ -663,18 +626,17 @@ mod tests {
     fn instruction_add_with_carry() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x8014);
         cpu.v[0x0] = 0xFF;
         cpu.v[0x1] = 0x01;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x00);
         assert_eq!(cpu.v[0xF], 0x01);
 
 
         cpu.v[0x0] = 0x41;
         cpu.v[0x1] = 0x01;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x42);
         assert_eq!(cpu.v[0xF], 0x00);
     }
@@ -683,17 +645,16 @@ mod tests {
     fn instruction_sub_with_barrow() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x8015);
         cpu.v[0x0] = 0xFF;
         cpu.v[0x1] = 0x01;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0xFE);
         assert_eq!(cpu.v[0xF], 0x01);
 
         cpu.v[0x0] = 0x00;
         cpu.v[0x1] = 0x01;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0xFF);
         assert_eq!(cpu.v[0xF], 0x00);
     }
@@ -702,15 +663,14 @@ mod tests {
     fn instruction_shr() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x8006);
         cpu.v[0x0] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x7F);
         assert_eq!(cpu.v[0xF], 0x01);
 
         cpu.v[0x0] = 0x02;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x01);
         assert_eq!(cpu.v[0xF], 0x00);
     }
@@ -719,17 +679,16 @@ mod tests {
     fn instruction_subn() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x8017);
         cpu.v[0x0] = 0x01;
         cpu.v[0x1] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0xFE);
         assert_eq!(cpu.v[0xF], 0x01);
 
         cpu.v[0x0] = 0x01;
         cpu.v[0x1] = 0x00;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0xFF);
         assert_eq!(cpu.v[0xF], 0x00);
     }
@@ -738,15 +697,14 @@ mod tests {
     fn instruction_shl() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x800E);
         cpu.v[0x0] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0xFE);
         assert_eq!(cpu.v[0xF], 0x01);
 
         cpu.v[0x0] = 0x01;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x02);
         assert_eq!(cpu.v[0xF], 0x00);
     }
@@ -756,23 +714,21 @@ mod tests {
     fn instruction_skip_reg_not_equal() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x9010);
         let start_pc = cpu.pc;
         cpu.v[0x0] = 0x42;
         cpu.v[0x1] = 0x84;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.pc, start_pc + 2);
     }
     #[test]
     fn instruction_skip_reg_not_equal_fail() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0x9011);
         cpu.v[0x0] = 0x42;
         cpu.v[0x1] = 0x84;
-        let res = cpu.execute(&mut mem, &mut display);
+        let res = cpu.execute(&mut mem);
         assert!(res.is_err());
     }
 
@@ -781,9 +737,8 @@ mod tests {
     fn instruction_ld_idx() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0xAFFF);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.idx, 0x0FFF);
     }
 
@@ -792,10 +747,9 @@ mod tests {
     fn instruction_jmp_v0() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0xB200);
         cpu.v[0x0] = 0x42;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.pc, 0x0242);
     }
 
@@ -803,9 +757,8 @@ mod tests {
     fn instruction_reg_rnd() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0xC0FF);
-        let res = cpu.execute(&mut mem, &mut display);
+        let res = cpu.execute(&mut mem);
         assert!(res.is_ok());
     }
 
@@ -814,7 +767,6 @@ mod tests {
     fn logo() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         let data = [
             0x00, 0xE0, 0xA2, 0x2A, 0x60, 0x0C, 0x61, 0x08, 0xD0, 0x1F, 0x70, 0x09, 0xA2, 0x39,
             0xD0, 0x1F, 0xA2, 0x48, 0x70, 0x08, 0xD0, 0x1F, 0x70, 0x04, 0xA2, 0x57, 0xD0, 0x1F,
@@ -830,9 +782,9 @@ mod tests {
         mem.load(&data, cpu.pc as usize);
         for i in 0..25 {
             let ins = cpu.fetch(&mem).unwrap();
-            cpu.execute(&mut mem, &mut display);
+            let _ = cpu.execute(&mut mem);
         }
-        println!("{}", display);
+        println!("{}", mem);
     }
 
     //OxE0000
@@ -840,16 +792,25 @@ mod tests {
     fn skip_next_instruction_key_pressed() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
-        unimplemented!();
+        cpu.instruction = Instruction(0xE09E);
+        cpu.v[0x0] = 0x00;
+        mem.kb[0x0] = 0x01;
+        let pc = cpu.pc;
+        let _ = cpu.execute(&mut mem);
+        assert_eq!(pc + 2, cpu.pc);
+
     }
 
     #[test]
     fn skip_next_instruction_key_not_pressed() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
-        unimplemented!();
+        cpu.instruction = Instruction(0xE0A1);
+        cpu.v[0x0] = 0x00;
+        mem.kb[0x0] = 0x00;
+        let pc = cpu.pc;
+        let _ = cpu.execute(&mut mem);
+        assert_eq!(pc + 2, cpu.pc);
     }
 
     //0xF000
@@ -857,10 +818,9 @@ mod tests {
     fn ld_dt_ref() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.delay = 0x42;
         cpu.instruction = Instruction(0xF007);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x42);
     }
 
@@ -868,18 +828,35 @@ mod tests {
     fn wait_for_key_press() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
-        unimplemented!();
+        let mut pc = cpu.pc;
+        mem.kb[0xF] = 0x01;
+        mem[pc] = 0xFF;
+        mem[pc +1 ] = 0x0A;
+        let _ = cpu.fetch(&mem);
+        let _ = cpu.execute(&mut mem);
+        assert_eq!(cpu.v[0xF], 0xF);
+        assert_eq!(pc + 2, cpu.pc);
+
+        pc = cpu.pc;
+        mem[pc] = 0xFF;
+        mem[pc +1 ] = 0x0A;
+        mem.kb[0xF] = 0x00;
+        cpu.v[0xF] = 0x00;
+        let _ = cpu.fetch(&mem);
+        let _ = cpu.execute(&mut mem);
+        assert_eq!(cpu.v[0xF], 0x00);
+        assert_eq!(pc, cpu.pc);
+
+
     }
 
     #[test]
     fn set_delay_timer() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.v[0x0] = 0x42;
         cpu.instruction = Instruction(0xF015);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.delay, 0x42);
     }
 
@@ -887,10 +864,9 @@ mod tests {
     fn set_sound_timer() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.v[0x0] = 0x42;
         cpu.instruction = Instruction(0xF018);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.sound, 0x42);
     }
 
@@ -898,11 +874,10 @@ mod tests {
     fn idx_add_reg() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.v[0x0] = 0x42;
         cpu.idx = 0x0001;
         cpu.instruction = Instruction(0xF01E);
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.idx, 0x0043);
         assert_eq!(cpu.v[0xF], 0x00);
     }
@@ -911,21 +886,19 @@ mod tests {
     fn set_idx_to_digit() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.v[0x0] = 0x42;
         cpu.instruction = Instruction(0xF029);
-        let _ = cpu.execute(&mut mem, &mut display);
-        unimplemented!();
+        let _ = cpu.execute(&mut mem);
+        assert_eq!(cpu.idx, 0x5A);
     }
 
     #[test]
     fn store_bcd_at_idx() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0xF033);
         cpu.v[0x0] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(mem[cpu.idx], 2 as u8);
         assert_eq!(mem[cpu.idx + 1], 5 as u8);
         assert_eq!(mem[cpu.idx + 2], 5 as u8);
@@ -935,11 +908,10 @@ mod tests {
     fn store_all_reg_from_idx() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0xF155);
         cpu.v[0x0] = 0x01;
         cpu.v[0x1] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(mem[cpu.idx], 0x01);
         assert_eq!(mem[cpu.idx + 0x0001], 0xFF);
     }
@@ -948,11 +920,10 @@ mod tests {
     fn load_all_reg_from_idx() {
         let mut mem = Memory::new();
         let mut cpu = CPU::new();
-        let mut display = Display::new();
         cpu.instruction = Instruction(0xF165);
         mem[cpu.idx] = 0x01;
         mem[cpu.idx + 0x1] = 0xFF;
-        let _ = cpu.execute(&mut mem, &mut display);
+        let _ = cpu.execute(&mut mem);
         assert_eq!(cpu.v[0x0], 0x01);
         assert_eq!(cpu.v[0x1], 0xFF);
     }
